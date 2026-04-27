@@ -1,0 +1,58 @@
+// Devicetree overlay: LSM6DSOX on I2C0 (TWIM0), INT1 → P0.30.
+//
+// Wiring (nRF52840-DK ↔ LSM6DSOX breakout):
+//   P0.27  SCL   →  SCL
+//   P0.26  SDA   →  SDA
+//   P0.30  IRQ   ←  INT1
+//   3V3          →  VDD / VDDIO
+//   GND          →  GND
+//   (SA0 → GND so I2C address = 0x6A; tie SA0 → VDD for 0x6B and update
+//    LSM6DSOX_I2C_ADDR in src/imu_lsm6dsox.c, or change the @0x6a node below.)
+//
+// Pull-ups: most LSM6DSOX breakouts have 10 kΩ pull-ups on board. If yours
+// doesn't, add 4.7 kΩ to 3V3 on SDA and SCL.
+
+&pinctrl {
+    i2c0_default: i2c0_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SCL, 0, 17)>,
+                    <NRF_PSEL(TWIM_SDA, 0, 20)>;
+        };
+    };
+    i2c0_sleep: i2c0_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SCL, 0, 17)>,
+                    <NRF_PSEL(TWIM_SDA, 0, 20)>;
+            low-power-enable;
+        };
+    };
+};
+
+&i2c0 {
+    status = "okay";
+    compatible = "nordic,nrf-twim";
+    clock-frequency = <I2C_BITRATE_FAST>;   // 400 kHz
+    pinctrl-0 = <&i2c0_default>;
+    pinctrl-1 = <&i2c0_sleep>;
+    pinctrl-names = "default", "sleep";
+
+    lsm6dsox: lsm6dsox@6a {
+        compatible = "st,lsm6dsox";        // node only — we drive it ourselves
+        reg = <0x6a>;
+        label = "LSM6DSOX";
+    };
+};
+
+/ {
+    aliases {
+        imu-i2c  = &lsm6dsox;
+        imu-int1 = &imu_int1;
+    };
+
+    imu_gpios {
+        compatible = "gpio-keys";
+        imu_int1: imu_int1 {
+            gpios = <&gpio0 14 (GPIO_ACTIVE_LOW)>;
+        };
+    };
+};

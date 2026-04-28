@@ -15,6 +15,7 @@
 #include "ring_buffer.h"
 #include "imu_lsm6dsox.h"
 #include "kws_pipeline.h"
+#include "ble_kws.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
@@ -30,7 +31,7 @@ static const char* KW_NAMES[] = {
 static void on_keyword(keyword_t kw, float conf) {
     LOG_INF(">>> %s (conf=%.2f)", KW_NAMES[kw], (double)conf);
     gpio_pin_toggle_dt(&led0);
-    // TODO(integration): publish to BLE NUS / MQTT / your event bus here.
+    ble_kws_notify(kw, conf);
 }
 
 static void enable_dwt(void) {
@@ -46,7 +47,13 @@ int main(void) {
     gpio_pin_configure_dt(&led0, GPIO_OUTPUT_INACTIVE);
     ring_init(&g_ring);
 
-    int rc = imu_start(&g_ring, IMU_AXIS_Z);   // training axis
+    int rc = ble_kws_init();
+    if (rc < 0) {
+        LOG_ERR("ble_kws_init failed: %d", rc);
+        return rc;
+    }
+
+    rc = imu_start(&g_ring, IMU_AXIS_Z);   // training axis
     if (rc < 0) {
         LOG_ERR("imu_start failed: %d", rc);
         return rc;

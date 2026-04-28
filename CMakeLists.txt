@@ -9,6 +9,7 @@ project(kws_firmware C)
 
 target_sources(app PRIVATE
     src/main.c
+    src/ble_kws.c
     src/imu_lsm6dsox.c
     src/kws_pipeline.c
     src/dsp.c

@@ -1,23 +1,23 @@
-// DSP front-end implementation. CMSIS-DSP for FFT, hand-rolled for the rest.
+// DSP front-end implementation. Hand-rolled DFT + mel filterbank.
 #include "dsp.h"
 #include "../model/mel_filterbank.h"
 #include <math.h>
-#include <string.h>
 #include <stdint.h>
-#include <stdlib.h>
+#include <zephyr/logging/log.h>
+
+LOG_MODULE_REGISTER(dsp, LOG_LEVEL_INF);
+
+static float s_last_peak;          // most recent post-HP peak (for telemetry)
+static float s_last_rms;           // most recent post-HP RMS  (for telemetry)
+float dsp_last_peak(void) { return s_last_peak; }
+float dsp_last_rms(void)  { return s_last_rms;  }
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f
 #endif
 
-#ifdef USE_CMSIS_DSP
-  #include "arm_math.h"
-  static arm_rfft_fast_instance_f32 g_rfft;
-  static int g_rfft_init = 0;
-#else
-  // Naive radix-2 / radix-3 RFFT — slow but works for benchmarking on host
-  #include <complex.h>
-#endif
+// CMSIS RFFT requires pow-of-2 N; DSCNN_N_FFT=133 is not, so we use a cached
+// naive DFT path. The CMSIS branch was removed to save flash.
 
 // 4th-order Butterworth HP @ 80 Hz, fs=3333 Hz, designed in scipy:
 //   sosbutter(4, 80/(3333/2), btype='high') → 2 biquads, transposed direct II
@@ -109,52 +109,75 @@ void dsp_log_standardize(float* m, int n_mels, int t) {
 // ─── log-mel main entry ───
 int dsp_logmel(const int16_t* pcm, int n_in,
                 float* logmel_out, float* scratch, int n_scratch) {
-    // Layout of scratch:
-    //   [0 .. WINDOW_SAMPLES)              : preprocessed waveform
-    //   [WINDOW_SAMPLES .. +DSCNN_N_FFT)   : windowed frame
-    //   [+DSCNN_N_FFT .. +N_BINS)          : power spectrum
-    // Layout: scratch = [hp_in (n_proc) | wav (WINDOW_SAMPLES) | frame (N_FFT) | power]
-    // We cap n_in at 2 × WINDOW_SAMPLES for the in-place HP path (saves 100+ KB of static).
+    // Scratch layout (compact):
+    //   When n_in <= WINDOW_SAMPLES (steady-state path): wav aliases hp_in,
+    //   so we only need WINDOW + N_FFT + (N_FFT/2+1) floats. Saves ~26 KB.
+    //   When n_in > WINDOW_SAMPLES we still allocate a separate wav for the
+    //   max-energy crop output. Pipeline always feeds WINDOW_SAMPLES, so the
+    //   small layout is the hot path.
     int n_proc = n_in;
     if (n_proc > 2 * WINDOW_SAMPLES) n_proc = 2 * WINDOW_SAMPLES;
-    int need = n_proc + WINDOW_SAMPLES + DSCNN_N_FFT + (DSCNN_N_FFT / 2 + 1);
+
+    const int alias_wav = (n_proc <= WINDOW_SAMPLES);
+    int need = (alias_wav ? WINDOW_SAMPLES
+                          : n_proc + WINDOW_SAMPLES)
+             + DSCNN_N_FFT + (DSCNN_N_FFT / 2 + 1);
     if (n_scratch < need) return -1;
 
     float* hp_in = scratch;
-    float* wav   = scratch + n_proc;
-    float* frame = wav + WINDOW_SAMPLES;
+    float* wav   = alias_wav ? hp_in : (scratch + n_proc);
+    float* frame = (alias_wav ? scratch + WINDOW_SAMPLES
+                              : wav + WINDOW_SAMPLES);
     float* power = frame + DSCNN_N_FFT;
 
-    // 1. int16 → float, in-place into scratch
-    for (int i = 0; i < n_proc; ++i) hp_in[i] = (float)pcm[i] / 32768.0f;
+    // 1. int16 → float, walk backward so this is safe when pcm aliases hp_in
+    // (callers may overlay the int16 PCM buffer onto the float scratch via a
+    // union to save SRAM). Since sizeof(float)>sizeof(int16_t) and we walk i
+    // descending, every read of pcm[i] precedes the write of hp_in[i] and the
+    // hp_in[j>i] writes only ever touch addresses above pcm[i].
+    for (int i = n_proc - 1; i >= 0; --i) {
+        hp_in[i] = (float)pcm[i] * (1.0f / 32768.0f);
+    }
 
     // 2. HP filter @ 80 Hz
     dsp_hp_filter_inplace(hp_in, n_proc);
 
+    // 2b. Quiet-floor gate: peak-normalize destroys amplitude info, so without
+    // this guard pure idle noise gets blown up to ±1.0 and the model fires on
+    // every window. Reject windows whose post-HP peak is below the floor.
+    {
+        // Combined peak + RMS gate. Peak alone is fooled by a single spike of
+        // electrical noise on the SPI line; RMS catches sustained low-level
+        // hum that the peak gate also misses. Both must clear thresholds.
+        float peak = 0.0f;
+        double sumsq = 0.0;
+        for (int i = 0; i < n_proc; ++i) {
+            float v = hp_in[i];
+            float a = fabsf(v);
+            if (a > peak) peak = a;
+            sumsq += (double)v * v;
+        }
+        float rms = sqrtf((float)(sumsq / (double)n_proc));
+        s_last_peak = peak;
+        s_last_rms  = rms;
+        if (peak < DSP_QUIET_FLOOR || rms < DSP_RMS_FLOOR) {
+            LOG_DBG("quiet: peak=%.5f rms=%.5f", (double)peak, (double)rms);
+            return 1;  // positive = silent, not error
+        }
+        LOG_DBG("active: peak=%.5f rms=%.5f", (double)peak, (double)rms);
+    }
+
     // 3. Peak normalize
     dsp_peak_normalize(hp_in, n_proc);
 
-    // 4. Max-energy 2.0s crop
-    dsp_max_energy_crop(hp_in, n_proc, WINDOW_SAMPLES, wav);
-
-    // 5. Compute mel power spectrogram, frame by frame
-#ifdef USE_CMSIS_DSP
-    if (!g_rfft_init) {
-        // CMSIS RFFT requires power-of-two length. n_fft=133 is not pow2.
-        // Pad to 256 for CMSIS path (overrides DSCNN_N_FFT for FFT only;
-        // mel_filterbank.h must be regenerated to match).
-        #error "CMSIS-DSP RFFT needs n_fft pow-of-2; rebuild mel filterbank with n_fft=256."
+    // 4. Max-energy 2.0s crop. When n_proc == WINDOW the crop is the identity
+    // and wav already aliases hp_in, so skip the redundant memcpy.
+    if (!(alias_wav && n_proc == WINDOW_SAMPLES)) {
+        dsp_max_energy_crop(hp_in, n_proc, WINDOW_SAMPLES, wav);
     }
-#endif
 
-    // Naive RDFT (works for any N, including non-pow-2). N=133 is not pow-2 so
-    // we cannot use arm_rfft_fast_f32 directly without zero-padding + a new
-    // mel filterbank. Instead we accelerate the naive path:
-    //   * Pre-compute the Hann window once (eliminates ~13k cosf per inference).
-    //   * For each frequency bin, generate twiddle factors via angle recurrence
-    //     instead of calling cosf/sinf inside the n-loop. This drops trig calls
-    //     from O(T·NB·N) ≈ 882k per inference to O(N) once at init.
-    //   * Twiddle step per bin k is (cos, -sin)(2π k / N), pre-computed.
+    // 5. Naive RDFT with cached Hann + twiddles. N=133 is not pow-2 so we
+    // cannot use arm_rfft_fast_f32 directly without rebuilding the filterbank.
     const int N    = DSCNN_N_FFT;
     const int HOP_ = DSCNN_HOP;
     const int T    = (WINDOW_SAMPLES - N) / HOP_ + 1;

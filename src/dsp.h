@@ -8,6 +8,23 @@
 #define WINDOW_SAMPLES   DSCNN_WINDOW_SAMPLES   // 6666 = 2.0s @ 3333 Hz
 #define MEL_T            ((WINDOW_SAMPLES - DSCNN_N_FFT) / DSCNN_HOP + 1)  // ≈ 100
 
+// Post-HP peak/RMS thresholds (normalized [-1,1] units) below which the window
+// is treated as silent and inference is skipped. The previous 0.005 peak-only
+// floor was too permissive — sustained low-level IMU noise was clearing it.
+// Defaults bumped 10× and an RMS gate added.  Tune empirically: log
+// `health: ... peak= rms=` while idle and set thresholds 3-5× above observed.
+#ifndef DSP_QUIET_FLOOR
+#define DSP_QUIET_FLOOR  0.05f      // peak floor
+#endif
+#ifndef DSP_RMS_FLOOR
+#define DSP_RMS_FLOOR    0.015f     // RMS floor (rejects steady-state hum)
+#endif
+
+// dsp_logmel return values:
+//   0  — features written, run inference
+//   1  — window is below quiet floor, treat as no-keyword (skip inference)
+//   <0 — error
+
 // Process raw int16 PCM samples -> normalized log-mel features.
 // Inputs:
 //   pcm:        raw int16 samples (any length n_in)
@@ -27,3 +44,7 @@ void dsp_hp_filter_inplace(float* x, int n);
 void dsp_peak_normalize(float* x, int n);
 int  dsp_max_energy_crop(const float* x, int n, int win, float* out);
 void dsp_log_standardize(float* m, int n_mels, int t);
+
+// Most recent post-HP peak / RMS (telemetry / threshold tuning).
+float dsp_last_peak(void);
+float dsp_last_rms(void);

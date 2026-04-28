@@ -31,9 +31,12 @@ struct kws_pipeline_stats {
     uint32_t inferences;
     uint32_t detections;
     uint32_t skipped_cold_start;
+    uint32_t skipped_quiet;       // gated out by DSP_QUIET_FLOOR
     uint32_t last_cycles;
     uint32_t avg_cycles;
     uint32_t avg_dsp_cycles;
     uint32_t avg_inf_cycles;
+    float    last_peak;           // last observed post-HP peak
+    float    last_rms;            // last observed post-HP RMS
 };
 void kws_pipeline_get_stats(struct kws_pipeline_stats* out);

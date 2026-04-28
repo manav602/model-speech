@@ -72,10 +72,12 @@ int main(void) {
         imu_get_stats(&is);
         kws_pipeline_get_stats(&ks);
         LOG_INF("health: imu_irq=%u samples=%u ovr=%u spi_err=%u | "
-                "inf=%u det=%u avg_cyc=%u (dsp=%u inf=%u)",
+                "inf=%u det=%u quiet=%u peak=%.4f rms=%.4f avg_cyc=%u "
+                "(dsp=%u inf=%u)",
                 is.isr_count, is.samples_pushed, is.fifo_overruns,
-                is.spi_errors, ks.inferences, ks.detections, ks.avg_cycles,
-                ks.avg_dsp_cycles, ks.avg_inf_cycles);
+                is.spi_errors, ks.inferences, ks.detections,
+                ks.skipped_quiet, (double)ks.last_peak, (double)ks.last_rms,
+                ks.avg_cycles, ks.avg_dsp_cycles, ks.avg_inf_cycles);
     }
     return 0;
 }

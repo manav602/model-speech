@@ -12,6 +12,7 @@
 // Wiring (boards/nrf52840dk_nrf52840.overlay):
 //   I2C0 → LSM6DSOX  (INT1 = imu-int1 alias, active-low)
 #include "imu_lsm6dsox.h"
+#include "ble_kws.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/i2c.h>
@@ -134,7 +135,13 @@ static void drain_thread_fn(void *a, void *b, void *c) {
     ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
     while (atomic_get(&g_running)) {
         k_sem_take(&g_fifo_sem, K_FOREVER);
-        if (atomic_get(&g_running)) drain_fifo();
+        if (atomic_get(&g_running)) {
+            drain_fifo();
+            uint32_t cnt = g_stats.isr_count;
+            if (cnt == 1 || (cnt % 500) == 0) {
+                ble_kws_notify_imu(cnt);
+            }
+        }
     }
 }
 

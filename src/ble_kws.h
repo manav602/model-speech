@@ -10,5 +10,11 @@
 // Call once after ring/IMU init. Enables BLE stack and starts advertising.
 int  ble_kws_init(void);
 
-// Send a keyword detection notification (no-op if no subscriber).
+// Keyword detection: [kw_id 0-3][conf 0-100]
 void ble_kws_notify(keyword_t kw, float conf);
+
+// Quiet gate (no motion): sends fixed byte 55. Call on every quiet window.
+void ble_kws_notify_quiet(void);
+
+// IMU heartbeat: [isr_count_lo][isr_count_hi]  (lower 16 bits).
+void ble_kws_notify_imu(uint32_t isr_count);

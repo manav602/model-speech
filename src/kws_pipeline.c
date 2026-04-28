@@ -11,6 +11,7 @@
 // always preempts inference — losing a sample is much worse than missing a
 // 250 ms slide.
 #include "kws_pipeline.h"
+#include "ble_kws.h"
 #include "dsp.h"
 #include "kws_int8.h"
 
@@ -170,6 +171,7 @@ static void kws_loop(void* a, void* b, void* c) {
         if (dsp_rc > 0) {
             // Window below quiet floor — no motion, skip inference entirely.
             s_stats.skipped_quiet++;
+            ble_kws_notify_quiet();
             if ((s_stats.skipped_quiet & 0x1F) == 1) {
                 LOG_INF("quiet gate: peak=%.5f skipped=%u",
                         (double)s_stats.last_peak, s_stats.skipped_quiet);

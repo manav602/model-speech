@@ -111,18 +111,40 @@ int ble_kws_init(void)
     return 0;
 }
 
-void ble_kws_notify(keyword_t kw, float conf)
+static void send_notify(const uint8_t *buf, uint16_t len)
 {
     if (!current_conn || !notify_enabled) {
         return;
     }
+    int rc = bt_gatt_notify(current_conn, &kws_svc.attrs[2], buf, len);
+    if (rc) {
+        LOG_WRN("bt_gatt_notify: %d", rc);
+    }
+}
+
+/* [kw_id 0-3][conf 0-100] */
+void ble_kws_notify(keyword_t kw, float conf)
+{
     uint8_t buf[2] = {
         (uint8_t)kw,
-        (uint8_t)(conf * 100.0f + 0.5f),  /* 0-100 percent */
+        (uint8_t)(conf * 100.0f + 0.5f),
     };
-    /* attrs[2] is the characteristic value attribute (decl is at [1]) */
-    int rc = bt_gatt_notify(current_conn, &kws_svc.attrs[2], buf, sizeof(buf));
-    if (rc) {
-        LOG_WRN("bt_gatt_notify failed: %d", rc);
-    }
+    send_notify(buf, sizeof(buf));
+}
+
+/* Fixed byte 55 — signals "quiet gate: no motion detected". */
+void ble_kws_notify_quiet(void)
+{
+    uint8_t val = 55;
+    send_notify(&val, 1);
+}
+
+/* [isr_count_lo][isr_count_hi] (lower 16 bits of ISR counter). */
+void ble_kws_notify_imu(uint32_t isr_count)
+{
+    uint8_t buf[2] = {
+        (uint8_t)(isr_count & 0xFF),
+        (uint8_t)((isr_count >> 8) & 0xFF),
+    };
+    send_notify(buf, sizeof(buf));
 }
